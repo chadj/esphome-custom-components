@@ -430,6 +430,7 @@ void VL53L1XComponent::loop() {
   if (!this->clear_interrupt()) return;
   if (!this->stop_ranging()) return;
   if(!this->get_range_status()) return;
+  this->new_data_ = true;
 
   if (!this->start_ranging()) {
     this->mark_failed();
@@ -439,6 +440,13 @@ void VL53L1XComponent::loop() {
 }
 
 void VL53L1XComponent::update() {
+  // only publish each measurement once
+  if (!this->new_data_) {
+    ESP_LOGV(TAG, "No new Range data to publish");
+    return;
+  }
+  this->new_data_ = false;
+
   this->running_update_ = true;
 
   if ((this->distance_!= 0) && (this->range_status_ != UNDEFINED)) {
