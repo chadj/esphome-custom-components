@@ -7,6 +7,7 @@ This component provides integration with the VL53L1X/VL53L4CD Time-of-Flight (To
 -   Supports both VL53L1X and VL53L4CD sensors
 -   I2C communication
 -   Configurable distance mode (short/long)
+-   Configurable timing budget
 -   Configurable update interval
 -   Range status reporting
 -   Automatic sensor initialization and configuration
@@ -24,7 +25,12 @@ Connect your VL53L1X/VL53L4CD sensor to your ESP32/ESP8266 using the following p
 ## Configuration Variables
 
 -   **distance_mode** (_Optional_, string, default: "long"): The distance mode of the sensor. Options are "short" or "long". Note that VL53L4CD sensors only support "short" mode and will be automatically configured as such.
--   **update_interval** (_Optional_, time, default: 0.5s): How often to update the sensor readings.
+-   **timing_budget** (_Optional_, time, default: 500ms): How long the sensor takes for each measurement. Longer budgets give more accurate, less noisy readings, shorter budgets give faster readings and use less power. Allowed values depend on `distance_mode`:
+    -   short: 15ms, 20ms, 33ms, 50ms, 100ms, 200ms, 500ms
+    -   long: 20ms, 33ms, 50ms, 100ms, 200ms, 500ms
+
+    For a VL53L4CD, the timing is calculated using ST's VL53L4CD driver formula, which supports a maximum of 200ms; a larger value (including the 500ms default) is clamped to 200ms and a warning is logged. The intermeasurement period is set to match the timing budget.
+-   **update_interval** (_Optional_, time, default: 60s): How often to publish the latest reading. Only a new measurement is published, so each published value is a separate measurement. If the interval is shorter than the time a measurement takes, some updates publish nothing. If it is longer, the measurements in between are dropped and only the latest is published.
 -   **i2c_id** (_Optional_, ID): The ID of the I2C bus if you have multiple I2C buses.
 
 ## Sensor Outputs
@@ -123,7 +129,7 @@ external_components:
 
 -   The VL53L1X component automatically detects and configures the sensor on startup
 -   The VL53L4CD sensor is automatically detected and forced to use "short" distance mode
--   The timing budget is set to 500ms for maximum accuracy
+-   The timing budget defaults to 500ms (200ms on a VL53L4CD) for maximum accuracy
 -   The sensor has a practical range of approximately 45mm to 4000mm
 -   Readings outside this range or with invalid status should be filtered out
--   The sensor updates approximately every 90ms internally, regardless of the configured update interval
+-   The component checks for a new measurement every 90ms, so a measurement cycle takes the timing budget rounded up to the next multiple of 90ms (e.g. about 180ms for a 100ms budget)
