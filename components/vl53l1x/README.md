@@ -128,6 +128,7 @@ external_components:
 ## Notes
 
 -   The VL53L1X component automatically detects and configures the sensor on startup
+-   If the sensor is powered down with XSHUT while ESPHome is running (e.g. before deep sleep), a single "Sensor not responding" warning is logged and polling continues quietly. The sensor is only configured at startup, so after XSHUT is set high again it gives no readings until the next reboot or wake from deep sleep
 -   The VL53L4CD sensor is automatically detected and forced to use "short" distance mode
 -   The timing budget defaults to 500ms (200ms on a VL53L4CD) for maximum accuracy
 -   The sensor has a practical range of approximately 45mm to 4000mm

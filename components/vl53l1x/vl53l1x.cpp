@@ -518,11 +518,29 @@ void VL53L1XComponent::dump_config() {
 
 void VL53L1XComponent::loop() {
   bool is_dataready;
+  uint8_t temp;
   // only run loop if not updating and every LOOP_TIME
   if (this->running_update_ || ((millis() - this->last_loop_time_) < LOOP_TIME) || this->is_failed() )
     return;
 
+  // check sensor is responding (e.g. not powered down by XSHUT), only logging once while it is not
+  if (!this->vl53l1x_read_byte(GPIO_HV_MUX__CTRL, &temp)) {
+    if (!this->not_responding_) {
+      ESP_LOGW(TAG, "Sensor not responding (powered down by XSHUT?)");
+      this->status_set_warning();
+      this->not_responding_ = true;
+    }
+    this->last_loop_time_ = millis();
+    return;
+  }
+  if (this->not_responding_) {
+    ESP_LOGI(TAG, "Sensor responding again");
+    this->status_clear_warning();
+    this->not_responding_ = false;
+  }
+
   if (!this->check_for_dataready(&is_dataready)) {
+    this->last_loop_time_ = millis();
     return;
   }
 

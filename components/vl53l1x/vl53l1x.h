@@ -95,6 +95,7 @@ class VL53L1XComponent : public PollingComponent, public i2c::I2CDevice, public 
   bool distance_mode_overriden_{false};
   bool timing_budget_clamped_{false};
   bool new_data_{false};
+  bool not_responding_{false};
   bool running_update_{false};
   uint16_t sensor_id_{0};
 
