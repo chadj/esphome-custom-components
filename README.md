@@ -2,6 +2,8 @@
 
 This repository contains custom components for [ESPHome](https://esphome.io/), a system to control ESP32 devices with simple YAML configuration files.
 
+> **Fork note:** This is a fork of [Averyy/esphome-custom-components](https://github.com/Averyy/esphome-custom-components) with VL53L4CD-specific updates to the `vl53l1x` component. See [VL53L4CD Updates](#vl53l4cd-updates-in-this-fork). The other components are unchanged from upstream.
+
 ## Available Components
 
 -   [HLK-LD2413](#hlk-ld2413) - 24GHz mmWave radar liquid level sensor
@@ -89,6 +91,29 @@ external_components:
 
 -   [Documentation](components/vl53l1x/README.md)
 -   [Example Configuration](example_vl53l1x.yaml)
+
+### VL53L4CD Updates in This Fork
+
+The `vl53l1x` component in this fork has been updated to drive the VL53L4CD (sensor ID 0xEBAA) as ST's VL53L4CD driver (STSW-IMG026) does, rather than as a VL53L1X:
+
+-   Loads ST's VL53L4CD default configuration (e.g. 40mm sigma threshold instead of the VL53L1X's 90mm) and performs the extra VL53L4CD init write.
+-   Calculates the timing budget from the sensor's oscillator frequency using ST's VL53L4CD formula instead of the VL53L1X tables. The VL53L4CD supports a maximum budget of 200ms, so larger values (including the 500ms default) are clamped to 200ms.
+
+These general fixes apply to both sensors:
+
+-   New `timing_budget` option.
+-   Distance mode is set before the timing budget, so short mode gets the short mode timing values.
+-   Only new measurements are published, never the same reading twice.
+-   Corrected intermeasurement period and VHV register writes.
+-   Compiles with current ESPHome versions.
+
+To use this fork's version:
+
+```yaml
+external_components:
+    - source: github://chadj/esphome-custom-components
+      components: [vl53l1x]
+```
 
 ## General Information
 
