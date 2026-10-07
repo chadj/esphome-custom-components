@@ -69,6 +69,7 @@ namespace vl53l1x {
 static const char *const TAG = "vl53l1x.sensor";
 
 static const uint16_t SOFT_RESET                                                          = 0x0000;
+static const uint16_t VL53L4CD_OSC_FREQUENCY                                              = 0x0006;
 static const uint16_t VL53L1_I2C_SLAVE__DEVICE_ADDRESS                                    = 0x0001;
 static const uint16_t VL53L1_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND                        = 0x0008;
 static const uint16_t ALGO__CROSSTALK_COMPENSATION_PLANE_OFFSET_KCPS                      = 0x0016;
@@ -205,7 +206,7 @@ static const uint8_t VL51L1X_DEFAULT_CONFIGURATION[] = {
 };
 
 static const uint16_t INIT_TIMEOUT  = 250;  // default timing budget = 100ms, so 250ms should be more than enough time
-static const uint16_t TIMING_BUDGET = 500;  // new timing budget is maximum allowable = 500 ms
+static const uint16_t VL53L4CD_MAX_TIMING_BUDGET = 200;  // VL53L4CD ULD accepts 10 - 200 ms
 static const uint16_t LOOP_TIME     =  90;  // loop executes every 90ms
 
 // Sensor Initialisation
@@ -251,6 +252,15 @@ void VL53L1XComponent::setup() {
     this->distance_mode_ = SHORT;
     this->distance_mode_overriden_ = true;
   }
+
+  // VL53L4CD timing budget is limited to 200 ms
+  if ((this->sensor_id_ == 0xEBAA) && (this->timing_budget_ > VL53L4CD_MAX_TIMING_BUDGET)) {
+    this->timing_budget_ = VL53L4CD_MAX_TIMING_BUDGET;
+    this->timing_budget_clamped_ = true;
+  }
+
+  // ST requires intermeasurement period >= timing budget (VL53L1X) or > timing budget (VL53L4CD)
+  this->intermeasurement_period_ = this->timing_budget_ + ((this->sensor_id_ == 0xEBAA) ? 1 : 0);
 
   // kick off initialisation by starting ranging
   if (!this->start_ranging()) {
@@ -301,19 +311,20 @@ void VL53L1XComponent::setup() {
     return;
   }
 
-  if (!this->set_timing_budget(TIMING_BUDGET)) {
-    this->error_code_ = COMMUNICATION_FAILED;
-    this->mark_failed();
-    return;
-  }
-
-  if (!this->set_intermeasurement_period(TIMING_BUDGET)) {
-    this->error_code_ = COMMUNICATION_FAILED;
-    this->mark_failed();
-    return;
-  }
-
+  // distance mode must be set before timing budget, as timing budget register values depend on distance mode
   if (!this->set_distance_mode(distance_mode_)) {
+    this->error_code_ = COMMUNICATION_FAILED;
+    this->mark_failed();
+    return;
+  }
+
+  if (!this->set_timing_budget(this->timing_budget_)) {
+    this->error_code_ = COMMUNICATION_FAILED;
+    this->mark_failed();
+    return;
+  }
+
+  if (!this->set_intermeasurement_period(this->intermeasurement_period_)) {
     this->error_code_ = COMMUNICATION_FAILED;
     this->mark_failed();
     return;
@@ -372,8 +383,13 @@ void VL53L1XComponent::dump_config() {
           ESP_LOGCONFIG(TAG, "  Distance Mode: LONG");
         }
       }
-      ESP_LOGD(TAG, "  Timing Budget: %ims",TIMING_BUDGET);
-      ESP_LOGD(TAG, "  Intermediate Period: %ims",TIMING_BUDGET);
+      if (this->timing_budget_clamped_) {
+        ESP_LOGW(TAG, "  VL53L4CD Timing Budget clamped to maximum: %ims", this->timing_budget_);
+      }
+      else {
+        ESP_LOGCONFIG(TAG, "  Timing Budget: %ims", this->timing_budget_);
+      }
+      ESP_LOGCONFIG(TAG, "  Intermeasurement Period: %ims", this->intermeasurement_period_);
       LOG_I2C_DEVICE(this);
       LOG_UPDATE_INTERVAL(this);
       LOG_SENSOR("  ", "Distance Sensor:", this->distance_sensor_);
@@ -562,9 +578,52 @@ bool VL53L1XComponent::check_for_dataready(bool *is_dataready) {
   return true;
 }
 
+// encode a timeout (in us, 12 bit fractional) as macro periods for timeout registers (from ST VL53L4CD ULD)
+static uint16_t encode_timeout(uint32_t timeout_us, uint32_t macro_period_us) {
+  uint32_t ls_byte = ((timeout_us + ((macro_period_us >> 6) >> 1)) / (macro_period_us >> 6)) - 1;
+  uint16_t ms_byte = 0;
+
+  while ((ls_byte & 0xFFFFFF00) > 0) {
+    ls_byte = ls_byte >> 1;
+    ms_byte++;
+  }
+  return (ms_byte << 8) + (ls_byte & 0xFF);
+}
+
+// VL53L4CD timing is calculated from its oscillator frequency rather than from the VL53L1X tables
+// (ST VL53L4CD ULD VL53L4CD_SetRangeTiming(), autonomous mode as intermeasurement period is non zero)
+bool VL53L1XComponent::set_timing_budget_l4cd(uint16_t timing_budget_ms) {
+  uint16_t osc_frequency;
+  uint32_t macro_period_us, timing_budget_us;
+
+  if (!this->vl53l1x_read_byte_16(VL53L4CD_OSC_FREQUENCY, &osc_frequency)) {
+    ESP_LOGW(TAG, "Error reading Oscillator Frequency");
+    this->status_set_warning();
+    return false;
+  }
+  if ((osc_frequency == 0) || (timing_budget_ms < 10) || (timing_budget_ms > VL53L4CD_MAX_TIMING_BUDGET)) {
+    ESP_LOGW(TAG, "Invalid VL53L4CD timing budget %ims or oscillator frequency %i", timing_budget_ms, osc_frequency);
+    this->status_set_warning();
+    return false;
+  }
+
+  macro_period_us = (2304 * (0x40000000 / static_cast<uint32_t>(osc_frequency))) >> 6;
+  timing_budget_us = ((static_cast<uint32_t>(timing_budget_ms) * 1000 - 4300) / 2) << 12;
+
+  if (!this->vl53l1x_write_byte_16(RANGE_CONFIG__TIMEOUT_MACROP_A_HI, encode_timeout(timing_budget_us, macro_period_us * 16)) ||
+      !this->vl53l1x_write_byte_16(RANGE_CONFIG__TIMEOUT_MACROP_B_HI, encode_timeout(timing_budget_us, macro_period_us * 12))) {
+    ESP_LOGW(TAG, "Error writing Set Time Budget values");
+    this->status_set_warning();
+    return false;
+  }
+  return true;
+}
+
 bool VL53L1XComponent::set_timing_budget(uint16_t timing_budget_ms) {
   bool ok;
   DistanceMode mode;
+
+  if (this->sensor_id_ == 0xEBAA) return this->set_timing_budget_l4cd(timing_budget_ms);
 
   if ( !get_distance_mode(&mode) ) return false;
 
@@ -734,11 +793,9 @@ bool VL53L1XComponent::get_distance_mode(DistanceMode *mode) {
 }
 
 
+// timing budget must be set after distance mode as its register values depend on distance mode
 bool VL53L1XComponent::set_distance_mode(DistanceMode distance_mode) {
   bool ok;
-  uint16_t timing_budget;
-
-  if (!this->get_timing_budget(&timing_budget)) return false;
 
   switch (distance_mode) {
     case SHORT:
@@ -783,12 +840,10 @@ bool VL53L1XComponent::set_distance_mode(DistanceMode distance_mode) {
 
 bool VL53L1XComponent::set_intermeasurement_period(uint16_t intermeasurement_ms) {
 
-  uint16_t timing_budget_ms,clock_pll;
+  uint16_t clock_pll;
   uint32_t intermeasurement_period;
 
-  if (!get_timing_budget(&timing_budget_ms)) return false;
-
-  if (intermeasurement_ms < timing_budget_ms) {
+  if (intermeasurement_ms < this->timing_budget_) {
     ESP_LOGW(TAG, "Set Intermeasurement ms < Timing Budget ms");
     ESP_LOGW(TAG, "OR Timing Budget not set before Intermeasurement Period");
     this->status_set_warning();
@@ -806,8 +861,11 @@ bool VL53L1XComponent::set_intermeasurement_period(uint16_t intermeasurement_ms)
   intermeasurement_period =
     static_cast<uint32_t>(clock_pll * intermeasurement_ms * 1.075);
   //ESP_LOGD(TAG, "imp =  %i", intermeasurement_period);
-  if (!this->vl53l1x_write_bytes_16(VL53L1_SYSTEM__INTERMEASUREMENT_PERIOD,
-               reinterpret_cast<const uint16_t *>(&intermeasurement_period), 2)) {
+  // 32 bit register, MSB first
+  const uint8_t data[4] = {
+    static_cast<uint8_t>(intermeasurement_period >> 24), static_cast<uint8_t>(intermeasurement_period >> 16),
+    static_cast<uint8_t>(intermeasurement_period >> 8), static_cast<uint8_t>(intermeasurement_period)};
+  if (!this->vl53l1x_write_bytes(VL53L1_SYSTEM__INTERMEASUREMENT_PERIOD, data, 4)) {
     ESP_LOGW(TAG, "Error writing Intermeasurement period");
     this->status_set_warning();
     return false;
@@ -818,16 +876,17 @@ bool VL53L1XComponent::set_intermeasurement_period(uint16_t intermeasurement_ms)
 
 bool VL53L1XComponent::get_intermeasurement_period(uint16_t *intermeasurement_ms) {
   uint16_t clock_pll;
+  uint8_t data[4];
   uint32_t tmp;
 
-  if (!this->vl53l1x_read_bytes_16(VL53L1_SYSTEM__INTERMEASUREMENT_PERIOD,
-               reinterpret_cast<uint16_t *>(&tmp), 2)) {
+  // 32 bit register, MSB first
+  if (!this->vl53l1x_read_bytes(VL53L1_SYSTEM__INTERMEASUREMENT_PERIOD, data, 4)) {
     ESP_LOGW(TAG, "Error reading Intermeasurment Period");
     this->status_set_warning();
     return false;
   }
-
-  *intermeasurement_ms = (uint16_t)tmp;
+  tmp = (static_cast<uint32_t>(data[0]) << 24) | (static_cast<uint32_t>(data[1]) << 16) |
+        (static_cast<uint32_t>(data[2]) << 8) | data[3];
 
   if (!this->vl53l1x_read_byte_16(VL53L1_RESULT__OSC_CALIBRATE_VAL, &clock_pll)) {
     ESP_LOGW(TAG, "Error reading Intermeasurement period: OSC_CALIBRATE_VAL");
@@ -838,7 +897,7 @@ bool VL53L1XComponent::get_intermeasurement_period(uint16_t *intermeasurement_ms
   clock_pll = clock_pll & 0x3FF;
   //ESP_LOGD(TAG, "get imp clock_pll = %i", clock_pll);
   //ESP_LOGD(TAG, "raw imp =  %i", *intermeasurement_ms);
-  *intermeasurement_ms = (uint16_t)(*intermeasurement_ms / (clock_pll * 1.065));
+  *intermeasurement_ms = (uint16_t)(tmp / (clock_pll * 1.065));
   //ESP_LOGD(TAG, "converted imp =  %i", *intermeasurement_ms);
   return true;
 }

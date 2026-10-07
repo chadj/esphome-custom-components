@@ -20,6 +20,7 @@ class VL53L1XComponent : public PollingComponent, public i2c::I2CDevice, public 
   void set_distance_sensor(sensor::Sensor *distance_sensor) { distance_sensor_ = distance_sensor; }
   void set_range_status_sensor(sensor::Sensor *range_status_sensor) { range_status_sensor_ = range_status_sensor; }
   void config_distance_mode(DistanceMode distance_mode ) { distance_mode_ = distance_mode; }
+  void config_timing_budget(uint16_t timing_budget_ms) { timing_budget_ = timing_budget_ms; }
   
 #ifdef USE_BINARY_SENSOR
   void set_above_distance(long above_distance) { above_distance_ = above_distance; }
@@ -37,6 +38,8 @@ class VL53L1XComponent : public PollingComponent, public i2c::I2CDevice, public 
  
  protected:
   DistanceMode distance_mode_;
+  uint16_t timing_budget_{500};
+  uint16_t intermeasurement_period_{500};
 
   uint16_t distance_{0};
 
@@ -70,6 +73,7 @@ class VL53L1XComponent : public PollingComponent, public i2c::I2CDevice, public 
 
   bool get_timing_budget(uint16_t *timing_budget_ms);
   bool set_timing_budget(uint16_t timing_budget_ms);
+  bool set_timing_budget_l4cd(uint16_t timing_budget_ms);
   bool get_distance_mode(DistanceMode *mode);
   bool set_distance_mode(DistanceMode distance_mode);
   
@@ -89,6 +93,7 @@ class VL53L1XComponent : public PollingComponent, public i2c::I2CDevice, public 
   
   uint32_t last_loop_time_{0};
   bool distance_mode_overriden_{false};
+  bool timing_budget_clamped_{false};
   bool running_update_{false};
   uint16_t sensor_id_{0};
 
