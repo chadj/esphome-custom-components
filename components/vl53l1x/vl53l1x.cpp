@@ -397,13 +397,13 @@ void VL53L1XComponent::setup() {
     return;
   }
 
-  if (!this->write_byte(VL53L1_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND, 0x09)) {
+  if (!this->vl53l1x_write_byte(VL53L1_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND, 0x09)) {
     ESP_LOGW(TAG, "Error writing Config Timeout Macro");
     this->error_code_ = COMMUNICATION_FAILED;
     this->mark_failed();
     return;
   }
-  if (!this->write_byte(0x0B, 0))  {
+  if (!this->vl53l1x_write_byte(0x000B, 0x00))  {
     ESP_LOGW(TAG, "Error writing Start VHV from the Previous Temperature");
     this->error_code_ = COMMUNICATION_FAILED;
     this->mark_failed();
